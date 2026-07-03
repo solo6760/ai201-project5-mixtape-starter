@@ -115,36 +115,36 @@ This section summarizes the reproduction steps, root causes, and fixes for the f
 ---
 
 ### Issue 1: My listening streak keeps resetting
-* **Reproduction**: Ran `test_streak_increments_on_sunday` in [test_streaks.py](tests/test_streaks.py); consecutive Sunday listens reset streaks to 1 instead of incrementing.
-* **Root Cause**: In [streak_service.py](services/streak_service.py), `elif days_since_last == 1 and today.weekday() != 6:` explicitly blocked streak increments on Sundays (`weekday() == 6`).
-* **Fix**: Removed the `and today.weekday() != 6` check and added weekend transition boundary tests in [test_boundaries.py](tests/test_boundaries.py).
+* Ran `test_streak_increments_on_sunday` in [test_streaks.py](tests/test_streaks.py); consecutive Sunday listens reset streaks to 1 instead of incrementing.
+* In [streak_service.py](services/streak_service.py), `elif days_since_last == 1 and today.weekday() != 6:` explicitly blocked streak increments on Sundays (`weekday() == 6`).
+* Removed the `and today.weekday() != 6` check and added weekend transition boundary tests in [test_boundaries.py](tests/test_boundaries.py).
 
 ---
 
 ### Issue 2: Friends Listening Now shows people from yesterday
-* **Reproduction**: Seeded a friend's listening event 12 hours ago and verified they incorrectly appeared in the active feed.
-* **Root Cause**: In [feed_service.py](services/feed_service.py), `RECENT_THRESHOLD` was set to `timedelta(hours=24)` instead of the design-specified `timedelta(minutes=30)`.
-* **Fix**: Changed `RECENT_THRESHOLD` to `timedelta(minutes=30)` and added presence boundary checks in [test_feed.py](tests/test_feed.py).
+* Seeded a friend's listening event 12 hours ago and verified they incorrectly appeared in the active feed.
+* In [feed_service.py](services/feed_service.py), `RECENT_THRESHOLD` was set to `timedelta(hours=24)` instead of the design-specified `timedelta(minutes=30)`.
+* Changed `RECENT_THRESHOLD` to `timedelta(minutes=30)` and added presence boundary checks in [test_feed.py](tests/test_feed.py).
 
 ---
 
 ### Issue 3: The same song keeps showing up twice in search
-* **Reproduction**: Searched for a song associated with multiple tags; it returned duplicate results for each tag.
-* **Root Cause**: The query in [search_service.py](services/search_service.py) performed a redundant `.outerjoin(song_tags, ...)` without grouping or using `.distinct()`.
-* **Fix**: Removed the redundant join, since tags are already pre-loaded separately via subqueries in [models.py](models.py).
+* Searched for a song associated with multiple tags; it returned duplicate results for each tag.
+* The query in [search_service.py](services/search_service.py) performed a redundant `.outerjoin(song_tags, ...)` without grouping or using `.distinct()`.
+* Removed the redundant join, since tags are already pre-loaded separately via subqueries in [models.py](models.py).
 
 ---
 
 ### Issue 4: Notification for playlist addition but not rating
-* **Reproduction**: Rated a friend's shared song and observed that a notification was never dispatched to the owner.
-* **Root Cause**: The `rate_song` function in [notification_service.py](services/notification_service.py) was missing a call to `create_notification`.
-* **Fix**: Added a call to `create_notification` inside `rate_song` (only when the rater is not the owner) and verified via [test_notifications.py](tests/test_notifications.py).
+* Rated a friend's shared song and observed that a notification was never dispatched to the owner.
+* The `rate_song` function in [notification_service.py](services/notification_service.py) was missing a call to `create_notification`.
+* Added a call to `create_notification` inside `rate_song` (only when the rater is not the owner) and verified via [test_notifications.py](tests/test_notifications.py).
 
 ---
 
 ### Issue 5: The last song in a playlist never shows up
-* **Reproduction**: Added 5 songs to a playlist and fetched it; only the first 4 songs were returned.
-* **Root Cause**: In [playlist_service.py](services/playlist_service.py), `get_playlist_songs` returned a sliced list `songs[:-1]`, which dropped the final track.
+* Added 5 songs to a playlist and fetched it; only the first 4 songs were returned.
+* In [playlist_service.py](services/playlist_service.py), `get_playlist_songs` returned a sliced list `songs[:-1]`, which dropped the final track.
 * **Fix**: Removed the `[:-1]` slice from the return statement.
 
 ---
@@ -152,8 +152,8 @@ This section summarizes the reproduction steps, root causes, and fixes for the f
 ## 3. AI Tool Usage Summary & Refinement
 
 Throughout this phase, AI tools were leveraged to accelerate understanding and refine our hypotheses without executing arbitrary code changes:
-1.  **Explaining Edge Cases**: Assisted in confirming python's `datetime.weekday()` behavior vs. `isoweekday()`.
-2.  **Structural Comparisons**: Helped trace how similar interactions (e.g., playlist addition vs. rating) are structured in `services/notification_service.py` and flagged the structural omission.
-3.  **SQLAlchemy Join Analysis**: Provided quick clarification on why duplicate results are fetched when query-joining table relationships in SQLite under ORMs.
+1. Assisted in confirming python's `datetime.weekday()` behavior vs. `isoweekday()`.
+2. Helped trace how similar interactions (e.g., playlist addition vs. rating) are structured in `services/notification_service.py` and flagged the structural omission.
+3. Provided quick clarification on why duplicate results are fetched when query-joining table relationships in SQLite under ORMs.
 
 
