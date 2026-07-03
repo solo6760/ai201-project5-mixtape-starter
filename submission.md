@@ -3,14 +3,14 @@
 During this project, AI was utilized as a collaborative pair programming partner to guide codebase orientation and refine root cause analyses:
 
 1.  **Codebase Orientation & Structure**: 
-    *   *What we asked*: We asked the AI to explain specific structures in the models (such as many-to-many relationships and order-based join tables) and trace dependencies between routes and services.
-    *   *What it helped us understand*: The AI clarified how blueprints under `routes/` delegate operations to `services/`, and how SQLAlchemy relationship mapping handles entity aggregation.
+    *   We asked the AI to explain specific structures in the models (such as many-to-many relationships and order-based join tables) and trace dependencies between routes and services.
+    *   The AI clarified how blueprints under `routes/` delegate operations to `services/`, and how SQLAlchemy relationship mapping handles entity aggregation.
 2.  **Debugging & Root Cause Analysis (RCA)**:
-    *   *What we asked*: We asked the AI to clarify python's `datetime.weekday()` returns, analyze duplication results when query-joining table relationships in SQLite under ORMs, and walk through playlist list slicing (`songs[:-1]`).
-    *   *What it helped us understand*: The AI immediately identified that `today.weekday()` returns 6 on Sundays (causing Sunday check reset) and verified the exclusive list slicing behavior of `[:-1]` in `get_playlist_songs`.
+    *   We asked the AI to clarify python's `datetime.weekday()` returns, analyze duplication results when query-joining table relationships in SQLite under ORMs, and walk through playlist list slicing (`songs[:-1]`).
+    *   The AI immediately identified that `today.weekday()` returns 6 on Sundays (causing Sunday check reset) and verified the exclusive list slicing behavior of `[:-1]` in `get_playlist_songs`.
 3.  **Verification & Gap Analysis**:
-    *   *Where we had to verify ourselves*: The AI initially attempted to create a local virtual environment directly, but the workspace's NTFS file system mount created path format mismatches (`Exec format error`) on the Linux OS. We had to diagnose that the `.venv` directory contained Windows binaries and manually adapt by using the user's active terminal virtual environment setup.
-    *   *Where the AI was incomplete*: The AI's initial code search missed that the rating function (`rate_song`) had no notification trigger logic whatsoever. We had to inspect `services/notification_service.py` directly and design the trigger condition (`if song.shared_by != user_id`) and text content ourselves.
+    *   The AI initially attempted to create a local virtual environment directly, but the workspace's NTFS file system mount created path format mismatches (`Exec format error`) on the Linux OS. We had to diagnose that the `.venv` directory contained Windows binaries and manually adapt by using the user's active terminal virtual environment setup.
+    *   The AI's initial code search missed that the rating function (`rate_song`) had no notification trigger logic whatsoever. We had to inspect `services/notification_service.py` directly and design the trigger condition (`if song.shared_by != user_id`) and text content ourselves.
 
 ---
 
@@ -101,76 +101,51 @@ Here is the trace of how adding a song to a playlist propagates through the app 
 
 ### Architectural Design Patterns
 
-*   **Service Layer Separation**: The controllers (blueprints in `routes/`) act strictly as thin entry points. They validate request payloads, call services to perform business operations, catch service-level exceptions (converting them to appropriate HTTP error status codes like 404 or 400), and format JSON payloads. This makes testing business logic independent of Flask context easier.
-*   **Relationship-Driven Aggregations**: The application makes heavy use of SQLAlchemy relationships (e.g., `user.friends`, `song.ratings`, `playlist.songs`).
-*   **Explicit Order Tracking**: The `playlist_entries` join table holds an explicit `position` column rather than relying on insertion order, allowing playlists to support track sequencing.
-*   **Subquery Pre-Loading**: Relationships like `Song.tags` are configured with `lazy="subquery"` to automatically load all tag records in a single query, optimizing tag reads and preventing N+1 queries.
+*   The controllers (blueprints in `routes/`) act strictly as thin entry points. They validate request payloads, call services to perform business operations, catch service-level exceptions (converting them to appropriate HTTP error status codes like 404 or 400), and format JSON payloads. This makes testing business logic independent of Flask context easier.
+*   The application makes heavy use of SQLAlchemy relationships (e.g., `user.friends`, `song.ratings`, `playlist.songs`).
+*   The `playlist_entries` join table holds an explicit `position` column rather than relying on insertion order, allowing playlists to support track sequencing.
+*   Relationships like `Song.tags` are configured with `lazy="subquery"` to automatically load all tag records in a single query, optimizing tag reads and preventing N+1 queries.
 
 ---
 
 ## 2. Bug Reproduction & Root Cause Analysis
 
-This section outlines the detailed Root Cause Analysis (RCA) for all five issues identified in the Mixtape application.
+This section summarizes the reproduction steps, root causes, and fixes for the five core issues.
 
 ---
 
 ### Issue 1: My listening streak keeps resetting
-*   **How you reproduced it**: 
-    Under the test case `test_streak_increments_on_sunday` in [tests/test_streaks.py](tests/test_streaks.py), a user's `last_listened_at` is set to Saturday (e.g., `2024-06-15 12:00:00 UTC`), showing they listened yesterday. When calling `update_listening_streak(user, now)` with `now` set to Sunday (e.g., `2024-06-16 12:00:00 UTC`), the user's streak resets to `1` (observed behavior) instead of incrementing to `2` (expected).
-*   **How you found the root cause**: 
-    Traced from the `/listen` endpoint in [routes/songs.py](routes/songs.py) to `record_listening_event` in [services/streak_service.py](services/streak_service.py). Followed the logic into `update_listening_streak`. The moment of confidence was seeing `elif days_since_last == 1 and today.weekday() != 6:`. Knowing that Python's `datetime.weekday()` returns `6` on Sundays, this condition evaluates to `False` on Sundays, forcing the execution flow into the `else` block which resets the streak to `1`.
-*   **The root cause**: 
-    The conditional check `elif days_since_last == 1 and today.weekday() != 6:` explicitly prevented streaks from incrementing when the current check day (`today`) fell on a Sunday (where `weekday() == 6`). This caused any consecutive daily listen occurring on a Sunday to fail the condition and reset the user's streak back to 1.
-*   **Your fix and side-effect check**: 
-    Modified [services/streak_service.py](services/streak_service.py) to remove the `and today.weekday() != 6` check from the consecutive-day block. Afterward, ran `pytest` to verify the pre-existing streak tests passed. Added comprehensive weekend transition boundary tests in [tests/test_boundaries.py](tests/test_boundaries.py) to verify that streak increments work cleanly on Saturday-to-Sunday, Sunday-to-Monday, and same-day listens without side-effects (e.g. double incrementing).
+* **Reproduction**: Ran `test_streak_increments_on_sunday` in [test_streaks.py](tests/test_streaks.py); consecutive Sunday listens reset streaks to 1 instead of incrementing.
+* **Root Cause**: In [streak_service.py](services/streak_service.py), `elif days_since_last == 1 and today.weekday() != 6:` explicitly blocked streak increments on Sundays (`weekday() == 6`).
+* **Fix**: Removed the `and today.weekday() != 6` check and added weekend transition boundary tests in [test_boundaries.py](tests/test_boundaries.py).
 
 ---
 
 ### Issue 2: Friends Listening Now shows people from yesterday
-*   **How you reproduced it**: 
-    Created a test listening event for a friend dated 12 hours ago, then queried the feed. The friend appeared in the "Friends Listening Now" list despite not having listened to anything recently.
-*   **How you found the root cause**: 
-    Traced from the `/<user_id>/listening-now` endpoint in [routes/feed.py](routes/feed.py) to `get_friends_listening_now` in [services/feed_service.py](services/feed_service.py). Inspected the `cutoff` calculation `cutoff = datetime.now(timezone.utc) - RECENT_THRESHOLD`. The moment of confidence was seeing `RECENT_THRESHOLD = timedelta(hours=24)` at the top of the file. Comparing this with the design comments in `seed_data.py` (which expected events "within the past 30 minutes" to show up) confirmed the threshold range was misconfigured.
-*   **The root cause**: 
-    The global configuration constant `RECENT_THRESHOLD` was set to a 24-hour duration (`timedelta(hours=24)`) instead of a 30-minute duration (`timedelta(minutes=30)`). This overly broad window pulled in listening events from up to a day ago instead of limiting the feed to actively listening users.
-*   **Your fix and side-effect check**: 
-    Changed `RECENT_THRESHOLD` in [services/feed_service.py](services/feed_service.py) to `timedelta(minutes=30)`. Verified that this did not affect the activity feed logic (which uses record-count limits instead of time-window thresholds). Wrote boundary presence checks in [tests/test_feed.py](tests/test_feed.py) and [tests/test_boundaries.py](tests/test_boundaries.py) to ensure events at 29 minutes are included while events at 31 minutes are filtered out.
+* **Reproduction**: Seeded a friend's listening event 12 hours ago and verified they incorrectly appeared in the active feed.
+* **Root Cause**: In [feed_service.py](services/feed_service.py), `RECENT_THRESHOLD` was set to `timedelta(hours=24)` instead of the design-specified `timedelta(minutes=30)`.
+* **Fix**: Changed `RECENT_THRESHOLD` to `timedelta(minutes=30)` and added presence boundary checks in [test_feed.py](tests/test_feed.py).
 
 ---
 
 ### Issue 3: The same song keeps showing up twice in search
-*   **How you reproduced it**: 
-    Created a song with three associated tags. Queried search matching the song title. The search output returned the song three separate times in the results list.
-*   **How you found the root cause**: 
-    Traced from the `/search` endpoint in [routes/songs.py](routes/songs.py) to `search_songs` in [services/search_service.py](services/search_service.py). Checked the database model relationships in [models.py](models.py). The moment of confidence was seeing the query `.outerjoin(song_tags, Song.id == song_tags.c.song_id)` in `search_songs` while `Song.tags` already used `lazy="subquery"`. The join created multiple result set rows for songs linked to multiple tags, producing duplication in SQL.
-*   **The root cause**: 
-    The search query performed an outer join to the `song_tags` junction table. Since tag associations are already pre-loaded separately via the `lazy="subquery"` relationship configuration on `Song`, the outer join was redundant. Because the query did not use `.distinct()` or grouping, it returned one `Song` instance per tag row in the database result set, generating duplicates for songs with multiple tags.
-*   **Your fix and side-effect check**: 
-    Removed the redundant `.outerjoin(song_tags, ...)` call in `search_songs()`, querying `Song` directly. Running the test suite shows all search tests (including `test_search_no_duplicates_multi_tag_song`) pass. Verified that the tags list associated with each song remains intact and populated correctly.
+* **Reproduction**: Searched for a song associated with multiple tags; it returned duplicate results for each tag.
+* **Root Cause**: The query in [search_service.py](services/search_service.py) performed a redundant `.outerjoin(song_tags, ...)` without grouping or using `.distinct()`.
+* **Fix**: Removed the redundant join, since tags are already pre-loaded separately via subqueries in [models.py](models.py).
 
 ---
 
 ### Issue 4: Notification for playlist addition but not rating
-*   **How you reproduced it**: 
-    User B rated a song shared by User A. Verified the notification counts for User A. The rating record was successfully inserted in the database, but no notification entry was created.
-*   **How you found the root cause**: 
-    Traced from the `/<song_id>/rate` endpoint in [routes/songs.py](routes/songs.py) to `rate_song` in [services/notification_service.py](services/notification_service.py). Compared it with `add_to_playlist` in the same file. The moment of confidence was seeing that `add_to_playlist` had an explicit call to `create_notification` to alert the original sharer, while `rate_song` had no such call.
-*   **The root cause**: 
-    The `rate_song` service function in `services/notification_service.py` was missing the notification dispatch logic. It updated the `Rating` record in the database but did not invoke `create_notification` to notify the original sharer of the song.
-*   **Your fix and side-effect check**: 
-    Added the notification trigger in `rate_song()` using `create_notification(user_id=song.shared_by, notification_type="song_rated", ...)` if `song.shared_by != rater_id`. Created a new test suite [tests/test_notifications.py](tests/test_notifications.py) to check that rating a friend's song fires a notification but rating one's own song does not.
+* **Reproduction**: Rated a friend's shared song and observed that a notification was never dispatched to the owner.
+* **Root Cause**: The `rate_song` function in [notification_service.py](services/notification_service.py) was missing a call to `create_notification`.
+* **Fix**: Added a call to `create_notification` inside `rate_song` (only when the rater is not the owner) and verified via [test_notifications.py](tests/test_notifications.py).
 
 ---
 
 ### Issue 5: The last song in a playlist never shows up
-*   **How you reproduced it**: 
-    Populated a playlist with 5 songs. Queried `/playlists/<id>/songs`. The endpoint returned only 4 songs, completely omitting the final track in the playlist sequence.
-*   **How you found the root cause**: 
-    Traced from `/playlists/<playlist_id>/songs` in [routes/playlists.py](routes/playlists.py) to `get_playlist_songs` in [services/playlist_service.py](services/playlist_service.py). The moment of confidence was inspecting the return statement: `return [song.to_dict() for song in songs[:-1]]`.
-*   **The root cause**: 
-    The `get_playlist_songs` function returned the list of song dicts using a slice slice `songs[:-1]`. This python slice drops the last element in the list, causing the final track of any playlist to be omitted from the output.
-*   **Your fix and side-effect check**: 
-    Removed the `[:-1]` slice from the return statement in `get_playlist_songs()` so that it returns `songs` fully. Verified playlist queries on empty playlists (0 tracks), single-song playlists (1 track), and multi-song playlists (5 tracks) in [tests/test_boundaries.py](tests/test_boundaries.py) to confirm it handles all list sizes correctly without index out of bounds.
+* **Reproduction**: Added 5 songs to a playlist and fetched it; only the first 4 songs were returned.
+* **Root Cause**: In [playlist_service.py](services/playlist_service.py), `get_playlist_songs` returned a sliced list `songs[:-1]`, which dropped the final track.
+* **Fix**: Removed the `[:-1]` slice from the return statement.
 
 ---
 
